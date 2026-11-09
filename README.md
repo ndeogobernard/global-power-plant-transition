@@ -1,5 +1,7 @@
 # The Global Energy Transition Through Power Plants
 
+![Project overview](assets/social-preview.png)
+
 A data science project on the global energy transition: predicting a power plant's primary fuel from its
 basic attributes, and grouping countries by their electricity generation mix, using 34,936 power plants
 in 167 countries. Every analysis is implemented in both **Python** and **R**.
