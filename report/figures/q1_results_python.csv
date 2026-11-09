@@ -1,0 +1,4 @@
+model,Test accuracy,Test macro-F1,CV macro-F1 (random folds),CV macro-F1 (country folds)
+Logistic regression,0.48,0.412,0.418 ± 0.006,0.282 ± 0.026
+Decision tree,0.55,0.525,0.538 ± 0.007,0.279 ± 0.064
+Random forest,0.782,0.739,0.729 ± 0.004,0.332 ± 0.035

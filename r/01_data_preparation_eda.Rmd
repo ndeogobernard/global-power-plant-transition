@@ -1,0 +1,208 @@
+---
+title: "Part 1: Data Preparation and Exploratory Analysis"
+subtitle: "Personal project: The Global Energy Transition Through Power Plants"
+author: "Name: Bernard Issifu"
+output:
+  html_document:
+    toc: true
+    df_print: kable
+---
+
+```{r setup, message = FALSE}
+# ---- Setup ----
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+theme_set(theme_minimal())
+knitr::opts_chunk$set(fig.width = 9, fig.height = 4.5)
+```
+
+This document introduces the Global Power Plant Database, prepares it for analysis, and explores how
+the world's generating capacity is split by fuel, how that has changed over time, and where it sits.
+The same steps are implemented in Python in `python/01_data_preparation_eda.ipynb`.
+
+# 1. The dataset
+
+The **Global Power Plant Database** (version 1.3.0; Global Energy Observatory, Google, KTH Royal
+Institute of Technology, Enipedia and World Resources Institute, 2021; CC BY 4.0) lists 34,936 power
+plants in 167 countries, with each plant's capacity (MW), location, primary fuel, commissioning year
+(when known), reported generation for 2013–2019 where available, and WRI's modelled (estimated)
+generation for 2013–2017. It is a 2021 snapshot.
+
+```{r load}
+raw <- read.csv("../data/global_power_plant_database.csv", stringsAsFactors = FALSE,
+                na.strings = "")
+dim(raw)
+cat("Countries:", n_distinct(raw$country_long), "\n")
+
+raw %>%
+  group_by(primary_fuel) %>%
+  summarise(plants = n(), capacity_GW = round(sum(capacity_mw) / 1000, 1)) %>%
+  mutate(share_of_capacity_pct = round(capacity_GW / sum(capacity_GW) * 100, 1)) %>%
+  arrange(desc(plants))
+```
+
+# 2. Data quality
+
+```{r missing}
+missing <- data.frame(column = names(raw), pct_missing = round(colMeans(is.na(raw)) * 100, 1)) %>%
+  filter(pct_missing > 0) %>%
+  arrange(desc(pct_missing))
+missing
+
+# Is the commissioning year missing equally often for every fuel?
+raw %>%
+  group_by(primary_fuel) %>%
+  summarise(pct_year_missing = round(mean(is.na(commissioning_year)) * 100, 1)) %>%
+  arrange(desc(pct_year_missing))
+```
+
+**Interpretation.** Capacity, location and primary fuel are complete. The commissioning year is missing
+for `r round(mean(is.na(raw$commissioning_year)) * 100, 1)`% of plants, and unevenly: about two thirds
+of solar plants lack it, against about a fifth of coal plants. WRI's estimated generation for 2017 is
+available for `r round(mean(!is.na(raw$estimated_generation_gwh_2017)) * 100, 1)`% of plants.
+
+# 3. Preparation
+
+```{r prepare}
+df <- raw
+
+# (1) Fuel groups: the six largest fuels keep their label; the nine small ones become 'Other'
+main_fuels <- c("Solar", "Hydro", "Wind", "Gas", "Coal", "Oil")
+df$fuel <- ifelse(df$primary_fuel %in% main_fuels, df$primary_fuel, "Other")
+
+# (2) Broad category used in the trend analysis
+category_map <- c(Solar = "Renewable", Wind = "Renewable", Hydro = "Renewable",
+                  Biomass = "Renewable", Geothermal = "Renewable", "Wave and Tidal" = "Renewable",
+                  Coal = "Fossil", Gas = "Fossil", Oil = "Fossil", Petcoke = "Fossil",
+                  Cogeneration = "Fossil", Nuclear = "Nuclear")
+df$category <- unname(category_map[df$primary_fuel])
+df$category[is.na(df$category)] <- "Other"
+
+# (3) Capacity spans 1 to 22,500 MW, so a log10 version is used for modelling
+df$log_capacity <- log10(df$capacity_mw)
+
+# (4) Missing commissioning years: filled with the overall median year, plus a missing flag
+df$year_missing <- as.integer(is.na(df$commissioning_year))
+median_year <- median(df$commissioning_year, na.rm = TRUE)
+df$comm_year <- ifelse(is.na(df$commissioning_year), median_year, df$commissioning_year)
+cat("Median commissioning year used for filling:", median_year, "\n")
+
+# (5) Whether the plant lists any secondary fuel
+df$multi_fuel <- as.integer(!is.na(df$other_fuel1))
+
+# (6) Estimated capacity factor (for the leakage check in Part 2 only)
+df$capacity_factor_est <- pmin(df$estimated_generation_gwh_2017 / (df$capacity_mw * 8.76), 1)
+
+df <- df %>% select(country, country_long, name, capacity_mw, log_capacity, latitude, longitude,
+                    primary_fuel, fuel, category, commissioning_year, comm_year, year_missing,
+                    multi_fuel, capacity_factor_est)
+dim(df)
+sort(table(df$fuel), decreasing = TRUE)
+```
+
+# 4. Exploratory analysis
+
+## 4.1 Plants and capacity by fuel
+
+```{r eda-fuel}
+by_fuel <- df %>%
+  group_by(fuel) %>%
+  summarise(plants = n(), capacity_GW = round(sum(capacity_mw) / 1000, 1),
+            median_MW = median(capacity_mw)) %>%
+  arrange(desc(capacity_GW))
+
+ggplot(by_fuel, aes(reorder(fuel, -plants), plants)) +
+  geom_col(fill = "steelblue") +
+  labs(title = "Number of Plants by Fuel", x = "Primary fuel group", y = "Number of plants")
+
+ggplot(by_fuel, aes(reorder(fuel, -capacity_GW), capacity_GW)) +
+  geom_col(fill = "darkorange") +
+  labs(title = "Total Capacity by Fuel", x = "Primary fuel group", y = "Capacity (GW)")
+
+by_fuel
+```
+
+**Interpretation.** Solar has the most plants
+(`r format(by_fuel$plants[by_fuel$fuel == "Solar"], big.mark = ",")`) but only
+`r by_fuel$capacity_GW[by_fuel$fuel == "Solar"]` GW, because its median plant is
+`r by_fuel$median_MW[by_fuel$fuel == "Solar"]` MW. Coal has
+`r format(by_fuel$plants[by_fuel$fuel == "Coal"], big.mark = ",")` plants but the most capacity
+(`r format(by_fuel$capacity_GW[by_fuel$fuel == "Coal"], big.mark = ",")` GW), with a median plant of
+`r by_fuel$median_MW[by_fuel$fuel == "Coal"]` MW.
+
+## 4.2 Plant size by fuel
+
+```{r eda-size}
+ggplot(df, aes(reorder(fuel, -capacity_mw, median), capacity_mw)) +
+  geom_boxplot(fill = "lightblue", outlier.size = 0.3) +
+  scale_y_log10() +
+  labs(title = "Plant Capacity by Fuel (log scale)", x = "Primary fuel group",
+       y = "Capacity (MW, log scale)")
+```
+
+**Interpretation.** Typical coal and gas plants are hundreds of MW, while solar and wind plants are
+mostly a few MW to tens of MW, so size will help separate fuels in Question 1.
+
+## 4.3 How the mix of new capacity has changed
+
+```{r eda-trend}
+trend <- df %>%
+  filter(!is.na(commissioning_year), commissioning_year >= 1950) %>%
+  mutate(decade = floor(commissioning_year / 10) * 10) %>%
+  group_by(decade, category) %>%
+  summarise(GW = sum(capacity_mw) / 1000, .groups = "drop")
+
+ggplot(trend, aes(factor(decade), GW, fill = category)) +
+  geom_col() +
+  scale_fill_manual(values = c(Fossil = "dimgray", Nuclear = "gold", Renewable = "seagreen",
+                               Other = "lightsteelblue")) +
+  labs(title = "Capacity Added per Decade by Category (plants with a known year)",
+       x = "Decade commissioned", y = "Capacity added (GW)", fill = "Category")
+
+shares <- trend %>%
+  group_by(decade) %>%
+  mutate(pct = round(GW / sum(GW) * 100, 1)) %>%
+  select(-GW) %>%
+  pivot_wider(names_from = category, values_from = pct, values_fill = 0)
+shares
+```
+
+**Interpretation.** Fossil fuels made up most new capacity in every decade from the 1950s to the 2010s,
+peaking at `r shares$Fossil[shares$decade == 2000]`% in the 2000s. Renewables' share of new capacity
+rose to `r shares$Renewable[shares$decade == 2010]`% in the 2010s and to
+`r shares$Renewable[shares$decade == 2020]`% for plants commissioned in 2020, the last year in the
+snapshot. Missing years (most often for solar and wind) mean these figures understate recent renewable
+additions.
+
+## 4.4 The largest countries
+
+```{r eda-countries, fig.height = 5.5}
+top <- df %>%
+  group_by(country_long) %>%
+  mutate(total = sum(capacity_mw)) %>%
+  ungroup() %>%
+  filter(dense_rank(desc(total)) <= 12) %>%
+  group_by(country_long, fuel) %>%
+  summarise(GW = sum(capacity_mw) / 1000, .groups = "drop")
+
+ggplot(top, aes(reorder(country_long, GW, sum), GW, fill = fuel)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Capacity Mix of the 12 Largest Countries", x = "Country", y = "Capacity (GW)",
+       fill = "Fuel")
+```
+
+```{r save}
+dir.create("../data/processed", showWarnings = FALSE)
+write.csv(df, "../data/processed/power_plants_clean_r.csv", row.names = FALSE)
+cat("Saved", dim(df), "\n")
+```
+
+# 5. Summary
+
+The prepared data cover 34,936 plants with complete capacity, location and fuel; commissioning year is
+known for half. Solar dominates by plant count, coal by capacity, and renewables' share of new capacity
+has risen sharply since the 2000s. Question 1 predicts each plant's fuel group; Question 2 clusters
+countries by their capacity mix.

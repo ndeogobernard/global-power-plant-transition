@@ -1,0 +1,4 @@
+"model","test_accuracy","test_macro_f1","cv_macro_f1_random","cv_macro_f1_country"
+"Logistic regression",0.485,0.414,"0.418 +/- 0.007","0.321 +/- 0.049"
+"Decision tree",0.575,0.545,"0.537 +/- 0.015","0.284 +/- 0.040"
+"Random forest",0.727,0.684,"0.677 +/- 0.008","0.330 +/- 0.046"

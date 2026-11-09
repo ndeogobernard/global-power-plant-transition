@@ -1,0 +1,4 @@
+model,Macro-F1 without capacity factor,Macro-F1 with capacity factor
+Logistic regression,0.412,0.525
+Decision tree,0.525,0.828
+Random forest,0.739,0.965

@@ -1,0 +1,8 @@
+,Logistic regression,Decision tree,Random forest
+Coal,0.648,0.691,0.77
+Gas,0.381,0.44,0.634
+Hydro,0.275,0.409,0.796
+Oil,0.392,0.644,0.672
+Other,0.155,0.446,0.579
+Solar,0.757,0.596,0.891
+Wind,0.429,0.69,0.827

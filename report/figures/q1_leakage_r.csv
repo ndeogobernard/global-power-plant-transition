@@ -1,0 +1,4 @@
+"model","macro_f1_without","macro_f1_with"
+"Logistic regression",0.414,0.514
+"Decision tree",0.545,0.826
+"Random forest",0.684,0.944

@@ -1,0 +1,181 @@
+---
+title: "Part 3: Question 2, Clustering Countries by Generation Mix"
+subtitle: "Personal project: The Global Energy Transition Through Power Plants"
+author: "Name: Bernard Issifu"
+output:
+  html_document:
+    toc: true
+    df_print: kable
+---
+
+**Question 2.** Which groups of countries share similar electricity-generation mixes?
+
+This document uses the prepared data from Part 1 (render `01_data_preparation_eda.Rmd` first). The
+Python version is `python/03_q2_clustering.ipynb`.
+
+```{r setup, message = FALSE}
+# ---- Setup ----
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(cluster)
+
+theme_set(theme_minimal())
+knitr::opts_chunk$set(fig.width = 8, fig.height = 5)
+
+df <- read.csv("../data/processed/power_plants_clean_r.csv", stringsAsFactors = FALSE)
+dim(df)
+```
+
+# 1. Approach
+
+The approach mirrors the Python version: each country with at least 1 GW of capacity is described by
+the share of its capacity in eight fuel groups (Coal, Gas, Oil, Hydro, Nuclear, Wind, Solar, Other).
+**k-means** (50 random starts) is run on these shares, which are already on a common 0–1 scale; k is
+chosen with the elbow and silhouette methods; and **hierarchical clustering** (Ward linkage) is compared
+using the adjusted Rand index.
+
+```{r shares}
+fuels <- c("Coal", "Gas", "Oil", "Hydro", "Nuclear", "Wind", "Solar", "Other")
+cap <- df %>%
+  mutate(mix = ifelse(primary_fuel == "Nuclear", "Nuclear", fuel)) %>%
+  group_by(country_long, mix) %>%
+  summarise(mw = sum(capacity_mw), .groups = "drop") %>%
+  pivot_wider(names_from = mix, values_from = mw, values_fill = 0)
+cap$total <- rowSums(cap[fuels])
+big <- cap %>% filter(total >= 1000)
+shares <- as.matrix(big[fuels] / big$total)
+rownames(shares) <- big$country_long
+cat("Countries with at least 1 GW:", nrow(shares), "of", nrow(cap), "\n")
+round(apply(shares, 2, quantile, probs = c(0, 0.25, 0.5, 0.75, 1)), 3)
+```
+
+# 2. Choosing the number of clusters
+
+```{r choose-k, fig.height = 4}
+set.seed(42)
+ks <- 2:10
+k_stats <- do.call(rbind, lapply(ks, function(k) {
+  km <- kmeans(shares, centers = k, nstart = 50, iter.max = 100)
+  sil <- silhouette(km$cluster, dist(shares))
+  data.frame(k = k, inertia = km$tot.withinss, silhouette = mean(sil[, "sil_width"]))
+}))
+
+ggplot(k_stats, aes(k, inertia)) + geom_line(colour = "steelblue") + geom_point() +
+  labs(title = "Elbow Method", x = "Number of clusters (k)", y = "Within-cluster sum of squares")
+ggplot(k_stats, aes(k, silhouette)) + geom_line(colour = "darkorange") + geom_point() +
+  labs(title = "Silhouette Score", x = "Number of clusters (k)", y = "Mean silhouette width")
+round(k_stats, 3)
+```
+
+**Interpretation.** The silhouette score is `r round(k_stats$silhouette[k_stats$k == 4], 3)` at k = 4 and
+`r round(k_stats$silhouette[k_stats$k == 5], 3)` at k = 5, essentially equal, and the elbow flattens
+around these values. As in Python, k = 5 is used because it also separates the oil-dominated countries.
+
+# 3. The clusters
+
+```{r clusters}
+set.seed(42)
+K <- 5
+km <- kmeans(shares, centers = K, nstart = 50, iter.max = 100)
+
+name_cluster <- function(row) {
+  top <- sort(row, decreasing = TRUE)
+  if (top[1] >= 0.5) return(paste0(names(top)[1], "-dominated"))
+  if (top[1] < 0.3) return("Diversified")
+  paste(names(top)[1], "and", names(top)[2])
+}
+profile <- aggregate(as.data.frame(shares), list(cluster = km$cluster), mean)
+cluster_names <- apply(profile[fuels], 1, name_cluster)
+labels <- cluster_names[km$cluster]
+names(labels) <- rownames(shares)
+
+profile_table <- data.frame(cluster = cluster_names, round(profile[fuels], 2),
+                            countries = as.vector(table(km$cluster)),
+                            total_GW = round(tapply(big$total, km$cluster, sum) / 1000))
+profile_table
+```
+
+```{r heatmap, fig.height = 4}
+heat <- profile_table %>%
+  mutate(label = paste0(cluster, " (", countries, ")")) %>%
+  select(label, all_of(fuels)) %>%
+  pivot_longer(-label, names_to = "fuel", values_to = "share")
+ggplot(heat, aes(factor(fuel, levels = fuels), label, fill = share)) +
+  geom_tile() +
+  geom_text(aes(label = sprintf("%.2f", share)), size = 3) +
+  scale_fill_gradient(low = "lightyellow", high = "firebrick") +
+  labs(title = "Average Capacity Mix of Each Cluster", x = "Fuel",
+       y = "Cluster (number of countries)", fill = "Mean share")
+```
+
+```{r members}
+members <- data.frame(country = rownames(shares), cluster = labels,
+                      GW = round(big$total / 1000)) %>%
+  arrange(cluster, desc(GW))
+for (cl in sort(unique(members$cluster))) {
+  m <- members$country[members$cluster == cl]
+  cat(sprintf("%s (%d): %s%s\n", cl, length(m), paste(head(m, 15), collapse = ", "),
+              ifelse(length(m) > 15, " ...", "")))
+}
+```
+
+```{r pca, fig.height = 6}
+pca <- prcomp(shares)
+coords <- data.frame(pca$x[, 1:2], cluster = labels, country = rownames(shares))
+var_pct <- round(100 * pca$sdev^2 / sum(pca$sdev^2))
+show <- c("China", "United States of America", "India", "Brazil", "France", "Germany",
+          "Saudi Arabia", "Russia", "Canada", "Norway", "Spain", "Japan")
+ggplot(coords, aes(PC1, PC2, colour = cluster)) +
+  geom_point(size = 2) +
+  geom_text(data = subset(coords, country %in% show),
+            aes(label = sub("United States of America", "USA", country)),
+            size = 2.8, vjust = -0.8, show.legend = FALSE) +
+  labs(title = "Countries by Generation Mix (first two principal components)",
+       x = paste0("PC1 (", var_pct[1], "% of variance)"),
+       y = paste0("PC2 (", var_pct[2], "% of variance)"), colour = "Cluster")
+```
+
+# 4. Checking the clusters
+
+```{r checks}
+sil <- silhouette(km$cluster, dist(shares))
+sil_by <- data.frame(cluster = labels, width = sil[, "sil_width"]) %>%
+  group_by(cluster) %>%
+  summarise(mean = round(mean(width), 3), min = round(min(width), 3), size = n())
+sil_by
+
+# Hierarchical clustering with Ward linkage and the same k
+hc <- cutree(hclust(dist(shares), method = "ward.D2"), k = K)
+
+adjusted_rand <- function(a, b) {
+  tab <- table(a, b)
+  comb2 <- function(x) sum(choose(x, 2))
+  index <- comb2(tab)
+  expected <- comb2(rowSums(tab)) * comb2(colSums(tab)) / choose(sum(tab), 2)
+  max_index <- (comb2(rowSums(tab)) + comb2(colSums(tab))) / 2
+  (index - expected) / (max_index - expected)
+}
+ari <- adjusted_rand(km$cluster, hc)
+cat(sprintf("Adjusted Rand index, k-means vs hierarchical: %.3f\n", ari))
+table(kmeans = labels, hierarchical = hc)
+```
+
+```{r save}
+write.csv(members, "../report/figures/q2_country_clusters_r.csv", row.names = FALSE)
+write.csv(profile_table, "../report/figures/q2_cluster_profiles_r.csv", row.names = FALSE)
+```
+
+# 5. Discussion
+
+R finds the same five groups as Python: **hydro-dominated**
+(`r sum(labels == "Hydro-dominated")` countries), **coal-dominated**
+(`r sum(labels == "Coal-dominated")`, including China and India), **gas-dominated**
+(`r sum(labels == "Gas-dominated")`), **oil-dominated** (`r sum(labels == "Oil-dominated")`) and a
+looser **diversified** group (`r sum(labels == "Diversified")`, including the United States, Germany,
+Japan and France). The diversified group has the lowest mean silhouette
+(`r sil_by$mean[sil_by$cluster == "Diversified"]`), and the adjusted Rand index with hierarchical
+clustering is `r sprintf("%.3f", ari)`. 119 of the 120 countries fall in the same cluster as in Python;
+the exception, Cote d'Ivoire, sits on the border between the hydro and diversified groups. No group is led by wind or solar, because their capacity shares
+are still small in this 2021 snapshot. Shares are of capacity, not generation, and coverage varies by
+country.

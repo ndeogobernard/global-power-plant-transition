@@ -1,0 +1,218 @@
+---
+title: "Part 2: Question 1, Predicting a Plant's Primary Fuel"
+subtitle: "Personal project: The Global Energy Transition Through Power Plants"
+author: "Name: Bernard Issifu"
+output:
+  html_document:
+    toc: true
+    df_print: kable
+---
+
+**Question 1.** Can a power plant's primary fuel be predicted from its capacity, location and
+commissioning year?
+
+This document uses the prepared data from Part 1 (render `01_data_preparation_eda.Rmd` first). The
+Python version is `python/02_q1_classification.ipynb`.
+
+```{r setup, message = FALSE}
+# ---- Setup ----
+library(dplyr)
+library(ggplot2)
+library(nnet)
+library(rpart)
+library(randomForest)
+
+theme_set(theme_minimal())
+knitr::opts_chunk$set(fig.width = 8, fig.height = 5)
+
+df <- read.csv("../data/processed/power_plants_clean_r.csv", stringsAsFactors = FALSE)
+df$fuel <- factor(df$fuel)
+dim(df)
+table(df$fuel)
+```
+
+# 1. Approach
+
+The approach mirrors the Python version:
+
+- **Target:** seven fuel groups (Coal, Gas, Hydro, Oil, Other, Solar, Wind). Classes are unequal, so the
+  models weight them equally and the main metric is **macro-F1** (the average F1 score over the seven
+  classes).
+- **Features:** log10 capacity, latitude, longitude, commissioning year (median-filled), a missing-year
+  flag and a secondary-fuel flag. WRI's estimated capacity factor is left out of the main models because
+  it was estimated from the fuel type (leakage), and tested separately.
+- **Models:** multinomial logistic regression (`nnet::multinom`, standardized features, class
+  weights); a decision tree (`rpart`, depth 8, at least 20 plants per leaf, class weights); and a random
+  forest (300 trees, an equal-sized sample of each class per tree).
+- **Validation:** an 80/20 split stratified on fuel, plus 5-fold cross-validation with random folds and
+  with **folds grouped by country**.
+
+```{r split}
+features <- c("log_capacity", "latitude", "longitude", "comm_year", "year_missing", "multi_fuel")
+
+# Stratified 80/20 split
+set.seed(42)
+idx_train <- unlist(lapply(split(seq_len(nrow(df)), df$fuel),
+                           function(i) sample(i, round(0.8 * length(i)))))
+train <- df[idx_train, ]
+test  <- df[-idx_train, ]
+cat("Training:", nrow(train), "plants   Test:", nrow(test), "plants\n")
+
+macro_f1 <- function(truth, pred) {
+  lv <- levels(truth)
+  f1 <- sapply(lv, function(k) {
+    tp <- sum(pred == k & truth == k)
+    p <- tp / max(sum(pred == k), 1)
+    r <- tp / max(sum(truth == k), 1)
+    ifelse(p + r == 0, 0, 2 * p * r / (p + r))
+  })
+  mean(f1)
+}
+
+fit_predict <- function(model, tr, te, feats = features) {
+  w <- as.numeric(nrow(tr) / (nlevels(tr$fuel) * table(tr$fuel))[as.character(tr$fuel)])
+  form <- as.formula(paste("fuel ~", paste(feats, collapse = " + ")))
+  if (model == "Logistic regression") {
+    mu <- sapply(tr[feats], mean)
+    s <- sapply(tr[feats], sd)
+    trs <- tr
+    tes <- te
+    trs[feats] <- sweep(sweep(tr[feats], 2, mu), 2, s, "/")
+    tes[feats] <- sweep(sweep(te[feats], 2, mu), 2, s, "/")
+    fit <- multinom(form, data = trs, weights = w, maxit = 500, trace = FALSE)
+    pred <- predict(fit, tes)
+  } else if (model == "Decision tree") {
+    fit <- rpart(form, data = tr, weights = w, method = "class",
+                 control = rpart.control(maxdepth = 8, minbucket = 20, cp = 0))
+    pred <- predict(fit, te, type = "class")
+  } else {
+    n_min <- min(table(tr$fuel))
+    fit <- randomForest(form, data = tr, ntree = 300, nodesize = 2, strata = tr$fuel,
+                        sampsize = rep(n_min, nlevels(tr$fuel)))
+    pred <- predict(fit, te)
+  }
+  list(fit = fit, pred = factor(pred, levels = levels(tr$fuel)))
+}
+model_names <- c("Logistic regression", "Decision tree", "Random forest")
+```
+
+# 2. Training and evaluation
+
+```{r evaluate}
+set.seed(42)
+fits <- lapply(setNames(model_names, model_names), function(m) fit_predict(m, train, test))
+
+# 5-fold CV: random stratified folds, and folds that keep each country together
+set.seed(42)
+random_fold <- integer(nrow(df))
+for (k in levels(df$fuel)) {
+  i <- which(df$fuel == k)
+  random_fold[i] <- sample(rep(1:5, length.out = length(i)))
+}
+countries <- unique(df$country)
+country_fold <- setNames(sample(rep(1:5, length.out = length(countries))), countries)
+group_fold <- unname(country_fold[df$country])
+
+cv_f1 <- function(m, folds) {
+  sapply(1:5, function(k) {
+    r <- fit_predict(m, df[folds != k, ], df[folds == k, ])
+    macro_f1(df$fuel[folds == k], r$pred)
+  })
+}
+cv_random <- sapply(model_names, cv_f1, folds = random_fold)
+cv_group  <- sapply(model_names, cv_f1, folds = group_fold)
+
+results <- data.frame(
+  model = model_names,
+  test_accuracy = sapply(model_names, function(m) round(mean(fits[[m]]$pred == test$fuel), 3)),
+  test_macro_f1 = sapply(model_names, function(m) round(macro_f1(test$fuel, fits[[m]]$pred), 3)),
+  cv_macro_f1_random = sprintf("%.3f +/- %.3f", colMeans(cv_random), apply(cv_random, 2, sd)),
+  cv_macro_f1_country = sprintf("%.3f +/- %.3f", colMeans(cv_group), apply(cv_group, 2, sd)),
+  row.names = NULL)
+results
+```
+
+```{r recall}
+recall <- sapply(model_names, function(m) {
+  sapply(levels(test$fuel), function(k) round(mean(fits[[m]]$pred[test$fuel == k] == k), 3))
+})
+recall
+```
+
+```{r confusion, fig.width = 7, fig.height = 6}
+cm <- as.data.frame(prop.table(table(True = test$fuel, Predicted = fits[["Random forest"]]$pred), 1))
+ggplot(cm, aes(Predicted, True, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = sprintf("%.2f", Freq)), size = 3) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Random Forest Confusion Matrix (test set, row-normalized)",
+       x = "Predicted fuel", y = "True fuel", fill = "Share")
+```
+
+**Interpretation.** On the random test split the random forest reaches accuracy
+`r results$test_accuracy[3]` and macro-F1 `r results$test_macro_f1[3]`, far ahead of the decision tree
+(`r results$test_macro_f1[2]`) and logistic regression (`r results$test_macro_f1[1]`). With folds
+grouped by country, the forest's macro-F1 falls from `r sprintf("%.3f", mean(cv_random[, 3]))` to
+`r sprintf("%.3f", mean(cv_group[, 3]))`: the model relies on having seen nearby plants from the same
+country.
+
+# 3. Leakage check: adding the estimated capacity factor
+
+```{r leakage}
+cf_median <- median(df$capacity_factor_est, na.rm = TRUE)
+train$capacity_factor_est[is.na(train$capacity_factor_est)] <- cf_median
+test$capacity_factor_est[is.na(test$capacity_factor_est)] <- cf_median
+set.seed(42)
+leak <- data.frame(
+  model = model_names,
+  macro_f1_without = results$test_macro_f1,
+  macro_f1_with = sapply(model_names, function(m) {
+    r <- fit_predict(m, train, test, c(features, "capacity_factor_est"))
+    round(macro_f1(test$fuel, r$pred), 3)
+  }), row.names = NULL)
+leak
+```
+
+**Interpretation.** Adding the estimated capacity factor raises the random forest's macro-F1 to
+`r leak$macro_f1_with[3]`. Because WRI estimated generation from the fuel type, this mostly reads the fuel
+back out of the feature, so it is excluded from the main models.
+
+# 4. Which features matter?
+
+```{r importance}
+# Drop in test macro-F1 when each feature is shuffled (5 repeats)
+rf <- fits[["Random forest"]]$fit
+base_f1 <- macro_f1(test$fuel, fits[["Random forest"]]$pred)
+set.seed(42)
+imp <- sapply(features, function(f) {
+  mean(replicate(5, {
+    sh <- test
+    sh[[f]] <- sample(sh[[f]])
+    base_f1 - macro_f1(test$fuel, factor(predict(rf, sh), levels = levels(test$fuel)))
+  }))
+})
+imp <- data.frame(feature = features, mean_f1_drop = round(imp, 4)) %>% arrange(desc(mean_f1_drop))
+
+ggplot(imp, aes(reorder(feature, mean_f1_drop), mean_f1_drop)) +
+  geom_col(fill = "seagreen") +
+  coord_flip() +
+  labs(title = "Random Forest: Permutation Importance", x = "Feature",
+       y = "Drop in test macro-F1 when the feature is shuffled")
+imp
+```
+
+```{r save}
+write.csv(results, "../report/figures/q1_results_r.csv", row.names = FALSE)
+write.csv(imp, "../report/figures/q1_importance_r.csv", row.names = FALSE)
+write.csv(leak, "../report/figures/q1_leakage_r.csv", row.names = FALSE)
+```
+
+# 5. Discussion
+
+The R models reach the same conclusions as Python. The random forest is the best model by a wide margin
+on a random split (macro-F1 `r results$test_macro_f1[3]` in R), the most important features are
+`r imp$feature[1]`, `r imp$feature[2]` and `r imp$feature[3]`, and performance drops sharply when whole
+countries are held out (`r sprintf("%.3f", mean(cv_group[, 3]))`), so the model learns where fuels are
+built more than general rules. The estimated capacity factor leaks the answer. Exact numbers differ a
+little from Python because of the different random split, the country-to-fold assignment, and the R
+forest's balanced sampling instead of class weights.
