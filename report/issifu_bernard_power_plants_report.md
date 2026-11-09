@@ -1,6 +1,6 @@
 ---
 title: "The Global Energy Transition Through Power Plants"
-subtitle: "Personal data-mining project (climate tech) · Predicting plant fuel types and clustering countries by generation mix"
+subtitle: "Data science project (climate tech) · Predicting plant fuel types and clustering countries by generation mix"
 author: "Bernard Issifu"
 date: "November 2026"
 ---

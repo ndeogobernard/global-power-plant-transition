@@ -1,6 +1,6 @@
 ---
 title: "Part 1: Data Preparation and Exploratory Analysis"
-subtitle: "Personal project: The Global Energy Transition Through Power Plants"
+subtitle: "Data science project: The Global Energy Transition Through Power Plants"
 author: "Name: Bernard Issifu"
 output:
   html_document:

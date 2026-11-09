@@ -1,8 +1,8 @@
 # The Global Energy Transition Through Power Plants
 
-A personal data-mining project (climate tech) by **Bernard Issifu**: a data-mining study of the world's power plants:
-predicting a plant's fuel type from its basic attributes, and grouping countries by their electricity
-generation mix. Every analysis is written in both **Python** and **R**.
+A data science project on the global energy transition: predicting a power plant's primary fuel from its
+basic attributes, and grouping countries by their electricity generation mix, using 34,936 power plants
+in 167 countries. Every analysis is implemented in both **Python** and **R**.
 
 ## Dataset
 

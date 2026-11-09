@@ -2,7 +2,6 @@
 title: "The Global Energy Transition Through Power Plants"
 author: "Bernard Issifu"
 date: "9 November 2026"
-course: "Personal data-mining project (climate tech)"
 no-section-numbers: true
 ---
 

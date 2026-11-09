@@ -1,6 +1,6 @@
 ---
 title: "Part 2: Question 1, Predicting a Plant's Primary Fuel"
-subtitle: "Personal project: The Global Energy Transition Through Power Plants"
+subtitle: "Data science project: The Global Energy Transition Through Power Plants"
 author: "Name: Bernard Issifu"
 output:
   html_document:
